@@ -66,22 +66,37 @@ class KeyenceBarcodeScannerBackend(BarcodeScannerBackend):
   async def send_command_and_stream(
     self,
     command: str,
-    stop_condition: Optional[asyncio.Event] = None
+    stop_condition: Optional[asyncio.Event] = None,
+    timeout: float = 60.0
 ):
-    loop = asyncio.get_running_loop()
-    queue = asyncio.Queue()
+    """Send a command and stream responses asynchronously until stop_condition is set.
+
+    Args:
+        command: The command to send to the barcode scanner
+        stop_condition: asyncio.Event that when set, stops the streaming
+        timeout: Maximum time in seconds to wait for individual responses
+
+    Yields:
+        Response strings from the scanner as they arrive
+    """
     await self.io.write((command + "\r").encode(self.serial_messaging_encoding))
 
-    def worker():
-       while not stop_condition.is_set():
-          code = self.io.readline()
-          decoded = code.decode(self.serial_messaging_encoding).strip()
-          loop.call_soon_threadsafe(queue.put_nowait, decoded)
-
-    threading.Thread(target=worker, daemon=True).start()
-
-    while not stop_condition.is_set():
-       yield await queue.get()
+    try:
+        while not stop_condition.is_set():
+            try:
+                response = await asyncio.wait_for(
+                    self.io.readline(),
+                    timeout=0.1  # Short timeout to check stop_condition frequently
+                )
+                decoded = response.decode(self.serial_messaging_encoding).strip()
+                if decoded:
+                    yield decoded
+            except asyncio.TimeoutError:
+                # No data available, loop back to check stop_condition
+                continue
+    finally:
+        # Ensure we stop reading even if iteration is interrupted
+        pass
 
   async def stop(self):
     await self.io.stop()
