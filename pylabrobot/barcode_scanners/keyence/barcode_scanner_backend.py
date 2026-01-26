@@ -6,6 +6,7 @@ from pylabrobot.barcode_scanners.backend import (
 
 import serial
 import time
+import threading
 
 from typing import Optional
 from pylabrobot.io.serial import Serial
@@ -65,41 +66,22 @@ class KeyenceBarcodeScannerBackend(BarcodeScannerBackend):
   async def send_command_and_stream(
     self,
     command: str,
-    timeout: float = 5.0,
-    stop_condition: Optional[callable] = None
+    stop_condition: Optional[asyncio.Event] = None
 ):
-    """Send a command and yield responses as an async generator.
-
-    Args:
-        command: The command to send to the barcode scanner
-        timeout: Maximum time in seconds to wait for responses
-        stop_condition: Optional callable that returns True when to stop reading.
-                       Takes a response string and returns bool.
-
-    Yields:
-        Response strings from the scanner as they arrive
-    """
+    loop = asyncio.get_running_loop()
+    queue = asyncio.Queue()
     await self.io.write((command + "\r").encode(self.serial_messaging_encoding))
 
-    deadline = time.time() + timeout
+    def worker():
+       while not stop_condition.is_set():
+          code = self.io.readline()
+          decoded = code.decode(self.serial_messaging_encoding).strip()
+          loop.call_soon_threadsafe(queue.put_nowait, decoded)
 
-    while time.time() < deadline:
-        try:
-            response = await asyncio.wait_for(
-                self.io.readline(),
-                timeout=0.1
-            )
-            decoded = response.decode(self.serial_messaging_encoding).strip()
+    threading.Thread(target=worker, daemon=True).start()
 
-            if decoded:  # Only yield non-empty responses
-                yield decoded
-
-            # Check stop condition if provided
-            if stop_condition and stop_condition(decoded):
-                break
-
-        except asyncio.TimeoutError:
-            continue
+    while not stop_condition.is_set():
+       yield await queue.get()
 
   async def stop(self):
     await self.io.stop()
