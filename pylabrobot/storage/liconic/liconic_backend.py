@@ -308,23 +308,13 @@ class LiconicBackend(IncubatorBackend):
     await self._send_command_plc("ST 1910") # set plate shuttle to plate read level
     await self._wait_ready()
 
-    # Create a task to handle streaming in the background
-    streaming_task = asyncio.create_task(
-        self._stream_barcodes(stop_event, barcode_lst)
-    )
+    await self.io_bcr.send_command("LON",stop_condition=stop_event) # turn on barcode reader and stream response for 30s
 
     await self._send_command_plc(f"WR DM5 {num_pos}")
 
-    # Wait for 60 seconds (or desired duration)
-    try:
-        await asyncio.wait_for(streaming_task, timeout=60.0)
-    except asyncio.TimeoutError:
-        # After 60 seconds, signal the stream to stop
-        stop_event.set()
-        try:
-            await streaming_task
-        except asyncio.CancelledError:
-            pass
+    barcode_response = self.io_bcr.wait_for_response(0.5)
+    barcode = barcode_response.strip()
+    print(barcode)
 
     await self._send_command_bcr("SSET") # enter settings mode
     await self._send_command_bcr("WP120") # setting barcode scanner to single read mode
@@ -339,12 +329,6 @@ class LiconicBackend(IncubatorBackend):
       raise RuntimeError("Failed to reset barcode reader to 1000 ms one shot time")
 
     await self._send_command_bcr("SEND") # exit settings mode
-
-  async def _stream_barcodes(self, stop_event: asyncio.Event, barcode_lst: list):
-      """Helper to stream barcodes in the background."""
-      async for code in self.io_bcr.send_command_and_stream("LON", stop_condition=stop_event):
-          print(f"Barcode scanned: {code}")
-          barcode_lst.append(code)
 
   async def _send_command_plc(self, command: str) -> str:
     """
